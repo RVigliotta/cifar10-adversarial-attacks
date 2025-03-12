@@ -1,0 +1,12 @@
+# Escludi la cartella PyCharm
+.idea/
+
+# Escludi l'ambiente virtuale Python
+venv/
+
+# Escludi i file di log generici
+*.log
+
+# Escludi file temporanei
+*.tmp
+*.swp
