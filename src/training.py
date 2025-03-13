@@ -24,12 +24,13 @@ def load_processed_data(batch_size=32):
 def train_model():
     # Configurations
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    num_epochs = 10
+    num_epochs = 12
     batch_size = 32
 
     # Initialize Model, Optimizer and Loss function
     model = TestCNN().to(device)
-    optimizer = optim.Adam(model.parameters(), lr=0.001)
+    optimizer = optim.Adam(model.parameters(), lr=0.001, weight_decay=1e-4)
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', patience=2, factor=0.1)
     criterion = nn.CrossEntropyLoss()
 
     # Load data
@@ -61,16 +62,28 @@ def train_model():
         model.eval()
         correct = 0
         total = 0
+        val_loss = 0.0
+
         with torch.no_grad():
             for images, labels in test_loader:
                 images, labels = images.to(device), labels.to(device)
                 outputs = model(images)
+                loss = criterion(outputs, labels)
+                val_loss += loss.item()
+
                 _, predicted = torch.max(outputs.data, 1)
                 total += labels.size(0)
                 correct += (predicted == labels).sum().item()
 
-        print(
-            f'Epoch [{epoch + 1}/{num_epochs}], Loss: {running_loss / len(train_loader):.4f}, Accuracy: {100 * correct / total:.2f}%')
+        # Calcola la loss media della validazione
+        val_loss /= len(test_loader)
+
+        # Stampa metriche
+        print(f'Epoch [{epoch + 1}/{num_epochs}], Loss: {running_loss / len(train_loader):.4f}, '
+              f'Val Loss: {val_loss:.4f}, Accuracy: {100 * correct / total:.2f}%')
+
+        # Update scheduler con la loss di validazione
+        scheduler.step(val_loss)
 
     # Save model
     os.makedirs('../models/saved_models', exist_ok=True)
