@@ -1,5 +1,6 @@
 # Escludi la cartella PyCharm
 .idea/
+__pycache__/
 
 # Escludi l'ambiente virtuale Python
 venv/
