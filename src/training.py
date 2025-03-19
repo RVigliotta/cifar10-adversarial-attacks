@@ -1,12 +1,23 @@
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from torch.utils.data import DataLoader
-from models.model_definitions import TestCNN
+import numpy as np
 import os
+from torch.utils.data import DataLoader
+from models.model_definitions import TestCNNv2
 
 
-def load_processed_data(batch_size=32):
+def mixup_data(x, y, alpha=0.4):
+    """Mixup augmentation."""
+    lam = np.random.beta(alpha, alpha)
+    batch_size = x.size(0)
+    index = torch.randperm(batch_size)
+    mixed_x = lam * x + (1 - lam) * x[index, :]
+    y_a, y_b = y, y[index]
+    return mixed_x, y_a, y_b, lam
+
+
+def load_processed_data(batch_size=64):
     try:
         # Load preprocessed datasets
         train_set = torch.load('../data/processed/train.pt', weights_only=False)
@@ -24,17 +35,19 @@ def load_processed_data(batch_size=32):
 def train_model():
     # Configurations
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    num_epochs = 12
-    batch_size = 32
+    num_epochs = 14
+    batch_size = 64
 
     # Initialize Model, Optimizer and Loss function
-    model = TestCNN().to(device)
-    optimizer = optim.Adam(model.parameters(), lr=0.001, weight_decay=1e-4)
-    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', patience=2, factor=0.1)
+    model = TestCNNv2().to(device)
+    optimizer = optim.AdamW(model.parameters(), lr=0.001, weight_decay=1e-4)  # Usato AdamW
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=num_epochs)  # Usato CosineAnnealingLR
     criterion = nn.CrossEntropyLoss()
 
     # Load data
     train_loader, test_loader = load_processed_data(batch_size)
+
+    best_val_loss = float('inf')
 
     # Training loop
     for epoch in range(num_epochs):
@@ -44,11 +57,14 @@ def train_model():
         for i, (images, labels) in enumerate(train_loader):
             images, labels = images.to(device), labels.to(device)
 
+            # Mixup augmentation
+            images, labels_a, labels_b, lam = mixup_data(images, labels)
+
             # Forward pass
             outputs = model(images)
-            loss = criterion(outputs, labels)
+            loss = lam * criterion(outputs, labels_a) + (1 - lam) * criterion(outputs, labels_b)
 
-            # Backward pass
+            # Backward pass and optimization
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
@@ -58,7 +74,7 @@ def train_model():
             if (i + 1) % 100 == 0:
                 print(f'Epoch [{epoch + 1}/{num_epochs}], Step [{i + 1}/{len(train_loader)}], Loss: {loss.item():.4f}')
 
-        # Epoch evaluation
+        # Epoch evaluation sulla validation set
         model.eval()
         correct = 0
         total = 0
@@ -75,20 +91,20 @@ def train_model():
                 total += labels.size(0)
                 correct += (predicted == labels).sum().item()
 
-        # Calcola la loss media della validazione
         val_loss /= len(test_loader)
 
-        # Stampa metriche
+        # Print metrics
         print(f'Epoch [{epoch + 1}/{num_epochs}], Loss: {running_loss / len(train_loader):.4f}, '
               f'Val Loss: {val_loss:.4f}, Accuracy: {100 * correct / total:.2f}%')
 
-        # Update scheduler con la loss di validazione
-        scheduler.step(val_loss)
+        scheduler.step()
 
-    # Save model
-    os.makedirs('../models/saved_models', exist_ok=True)
-    torch.save(model.state_dict(), '../models/saved_models/test_cnn.pth')
-    print('Training completed and model saved!')
+        # Save best model
+        if val_loss < best_val_loss:
+            best_val_loss = val_loss
+            os.makedirs('../models/saved_models', exist_ok=True)
+            torch.save(model.state_dict(), '../models/saved_models/test_cnn_v2.pth')
+            print(f'--> Best model saved with Val Loss: {val_loss:.4f}')
 
 
 if __name__ == '__main__':

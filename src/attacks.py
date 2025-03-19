@@ -1,8 +1,13 @@
 import torch
 
 
-def fgsm_attack(image, epsilon, data_grad):
-    sign_data_grad = data_grad.sign()
-    perturbed_image = image + epsilon * sign_data_grad
-    perturbed_image = torch.clamp(perturbed_image, -1, 1)
-    return perturbed_image
+def fgsm_attack(model, images, labels, epsilon=0.03):
+    images.requires_grad = True
+    outputs = model(images)
+    loss = torch.nn.functional.cross_entropy(outputs, labels)
+    model.zero_grad()
+    loss.backward()
+
+    perturbed_images = images + epsilon * images.grad.sign()
+    perturbed_images = torch.clamp(perturbed_images, 0, 1).detach()
+    return perturbed_images
