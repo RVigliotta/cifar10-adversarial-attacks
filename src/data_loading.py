@@ -27,11 +27,10 @@ def download_cifar10():
 
 
 def preprocess_data():
-    """Preprocess e salva i dati nella directory processed"""
-    # Crea le directory se non esistono
+    """Preprocess and save the data in the processed directory"""
     os.makedirs('../data/processed', exist_ok=True)
 
-    # Trasformazioni
+    # Transformations
     train_transform = transforms.Compose([
         transforms.RandomHorizontalFlip(),
         transforms.RandomCrop(32, padding=4),
