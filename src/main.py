@@ -20,7 +20,6 @@ class CustomDataset(Dataset):
 
 def plot_results(results):
     models = ['Clean Model', 'Adversarial Model']
-    categories = ['Clean Data', 'Attacked Data']
     colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728']
 
     clean_clean = results['Clean Model (Clean)']['accuracy']
@@ -38,7 +37,6 @@ def plot_results(results):
     rects1 = ax.bar(x - width / 2, values[:, 0], width, label='Clean Data', color=colors[0], edgecolor='black')
     rects2 = ax.bar(x + width / 2, values[:, 1], width, label='Attacked Data', color=colors[1], edgecolor='black')
 
-    # Aggiungi testo, etichette e formattazione
     ax.set_ylabel('Accuracy', fontsize=14)
     ax.set_title('Model Robustness Comparison\n(FGSM Attack, ε=0.03)', fontsize=16, pad=20)
     ax.set_xticks(x)
@@ -47,13 +45,12 @@ def plot_results(results):
     ax.grid(axis='y', linestyle='--', alpha=0.7)
     ax.legend(fontsize=12, framealpha=0.9)
 
-    # Aggiungi valori sulle barre
     def autolabel(rects):
         for rect in rects:
             height = rect.get_height()
             ax.annotate(f'{height:.2%}',
                         xy=(rect.get_x() + rect.get_width() / 2, height),
-                        xytext=(0, 3),  # 3 points vertical offset
+                        xytext=(0, 3),
                         textcoords="offset points",
                         ha='center', va='bottom',
                         fontsize=11)
@@ -61,7 +58,6 @@ def plot_results(results):
     autolabel(rects1)
     autolabel(rects2)
 
-    # Aggiungi una legenda per i colori
     plt.tight_layout()
     plt.savefig('../docs/robustness_comparison.png', dpi=300, bbox_inches='tight')
     plt.show()
@@ -70,12 +66,10 @@ def plot_results(results):
 def main():
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
-    # Caricamento dati
     test_set = torch.load('../data/processed/test.pt', weights_only=False)
     test_dataset = CustomDataset(test_set)
     test_loader = DataLoader(test_dataset, batch_size=64, shuffle=False)
 
-    # Caricamento modelli
     model_clean = TestCNNv2().to(device)
     model_adv = TestCNNv2().to(device)
 
@@ -86,7 +80,6 @@ def main():
         print(f"Error loading models: {e}")
         return
 
-    # Inizializzazione evaluator
     clean_evaluator = CleanEvaluator(device=device)
     attack_evaluator = AttackEvaluator(
         attack_fn=fgsm_attack,
@@ -94,7 +87,6 @@ def main():
         device=device
     )
 
-    # Valutazioni complete
     results = {}
 
     print("\nEvaluating Clean Model:")
@@ -105,7 +97,6 @@ def main():
     results['Adversarial Model (Clean)'] = clean_evaluator.evaluate(model_adv, test_loader)
     results['Adversarial Model (Attacked)'] = attack_evaluator.evaluate(model_adv, test_loader)
 
-    # Stampa risultati
     print("\nFinal Results:")
     for key, value in results.items():
         print(f"{key}: {value['accuracy']:.2%}")

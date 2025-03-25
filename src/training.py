@@ -113,7 +113,6 @@ def train_model_adversarial():
     num_epochs = 14
     batch_size = 64
     epsilon = 0.03
-    alpha = 0.5  # Parametro dal paper per la combinazione delle loss
 
     model = TestCNNv2().to(device)
     optimizer = optim.AdamW(model.parameters(), lr=0.001, weight_decay=1e-4)
@@ -130,12 +129,11 @@ def train_model_adversarial():
         for i, (images, labels) in enumerate(train_loader):
             images, labels = images.to(device), labels.to(device)
 
-            # Generazione esempi avversariali con probabilità 50%
+            # Generation of adversarial examples with 50% probability
             if torch.rand(1) < 0.5:
-                # Modalità eval per l'attacco
                 model.eval()
 
-                # Calcola gli esempi avversariali mantenendo i gradienti
+                # Cacolate the adversarial examples keeping the gradients
                 with torch.enable_grad():
                     adv_images = fgsm_attack(model, images, labels, epsilon)
 
@@ -144,11 +142,9 @@ def train_model_adversarial():
             else:
                 inputs = images
 
-            # Forward pass
             outputs = model(inputs)
             loss = criterion(outputs, labels)
 
-            # Backward pass e ottimizzazione
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
@@ -158,7 +154,6 @@ def train_model_adversarial():
             if (i + 1) % 100 == 0:
                 print(f'Epoch [{epoch + 1}/{num_epochs}], Step [{i + 1}/{len(train_loader)}], Loss: {loss.item():.4f}')
 
-        # Validazione
         model.eval()
         correct = 0
         total = 0
@@ -179,7 +174,6 @@ def train_model_adversarial():
         print(f'Epoch [{epoch + 1}/{num_epochs}], Loss: {running_loss / len(train_loader):.4f}, '
               f'Val Loss: {val_loss:.4f}, Accuracy: {100 * correct / total:.2f}%')
 
-        # Salvataggio modello
         if val_loss < best_val_loss:
             best_val_loss = val_loss
             torch.save(model.state_dict(), '../models/saved_models/test_cnn_v2_adv.pth')
