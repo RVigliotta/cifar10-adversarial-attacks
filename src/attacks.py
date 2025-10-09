@@ -1,44 +1,65 @@
 import torch
 
 
-def fgsm_attack(model, images, labels, epsilon=0.03):
-    images.requires_grad = True
-    outputs = model(images)
+def fgsm_attack(model, images, labels, epsilon=0.03, mean=None, std=None, device='cpu'):
+    """
+    FGSM attack (Goodfellow et al. 2014)
+    Perturbs the images in the direction of the loss gradient.
+    Operates in the [0,1] space but normalizes before passing to the model.
+    """
+    model.eval()
 
+    if mean is None or std is None:
+        # Default CIFAR-10 normalization values
+        mean = torch.tensor([0.4914, 0.4822, 0.4465], device=images.device).view(1, 3, 1, 1)
+        std = torch.tensor([0.2470, 0.2435, 0.2616], device=images.device).view(1, 3, 1, 1)
+
+    images = images.clone().detach().to(images.device)
+    labels = labels.to(images.device)
+
+    # Normalize input before forward
+    inputs = (images - mean) / std
+    inputs.requires_grad = True
+
+    outputs = model(inputs)
     loss = torch.nn.functional.cross_entropy(outputs, labels)
+
     model.zero_grad()
     loss.backward()
 
-    perturbed_images = images + epsilon * images.grad.sign()
-    perturbed_images = torch.clamp(perturbed_images, 0, 1).detach()
+    # Apply perturbation
+    perturbed = images + epsilon * inputs.grad.sign()
+    perturbed = torch.clamp(perturbed, 0, 1)
 
-    return perturbed_images
+    return perturbed.detach()
 
 
-def pgd_attack(model, images, labels, epsilon=0.03, alpha=0.01, steps=40, random_start=True):
+def pgd_attack(model, images, labels, epsilon=0.03, alpha=2/255, num_iter=7, mean=None, std=None, device='cpu'):
     """
-    Generate adversarial PGD examples
-    :param alpha: attack learning rate (step size)
-    :param steps: number of iterations
-    :param random_start: if True, initialize with random noise
+    PGD (Madry et al. 2018)
+    Iterative FGSM with projection into the epsilon-ball around the original images.
+    Operates in the [0,1] space, but the model receives normalized inputs.
     """
-    images = images.clone().detach()
+    model.eval()
 
-    if random_start:
-        # Random initialization in epsilon-ball
-        images = images + torch.empty_like(images).uniform_(-epsilon, epsilon)
-        images = torch.clamp(images, 0, 1).detach()
+    if mean is None or std is None:
+        mean = torch.tensor([0.4914, 0.4822, 0.4465], device=images.device).view(1, 3, 1, 1)
+        std = torch.tensor([0.2470, 0.2435, 0.2616], device=images.device).view(1, 3, 1, 1)
 
-    for _ in range(steps):
-        images.requires_grad = True
-        outputs = model(images)
+    images = images.clone().detach().to(images.device)
+    labels = labels.to(images.device)
+    perturbed = images.clone().detach()
+
+    for _ in range(num_iter):
+        perturbed.requires_grad = True
+        inputs = (perturbed - mean) / std
+        outputs = model(inputs)
         loss = torch.nn.functional.cross_entropy(outputs, labels)
 
-        grad = torch.autograd.grad(loss, images, retain_graph=False, create_graph=False)[0]
-
-        # PGD step update
-        adv_images = images + alpha * grad.sign()
+        model.zero_grad()
+        loss.backward()
+        adv_images = perturbed + alpha * perturbed.grad.sign()
         eta = torch.clamp(adv_images - images, min=-epsilon, max=epsilon)
-        images = torch.clamp(images + eta, 0, 1).detach()
+        perturbed = torch.clamp(images + eta, 0, 1).detach()
 
-    return images
+    return perturbed

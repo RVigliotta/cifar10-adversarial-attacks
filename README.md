@@ -1,6 +1,6 @@
-![GitHub commit activity](https://img.shields.io/github/commit-activity/t/RVigliotta/AIron-Mike)
-![GitHub last commit](https://img.shields.io/github/last-commit/RVigliotta/AIron-Mike)
-![GitHub Repo stars](https://img.shields.io/github/stars/RVigliotta/AIron-Mike)
+![GitHub commit activity](https://img.shields.io/github/commit-activity/t/RVigliotta/cifar10-adversarial-attacks)
+![GitHub last commit](https://img.shields.io/github/last-commit/RVigliotta/cifar10-adversarial-attacks)
+![GitHub Repo stars](https://img.shields.io/github/stars/RVigliotta/cifar10-adversarial-attacks)
 
 📁 Data          → Contains CIFAR-10 raw data and preprocessed tensors;
 
@@ -60,7 +60,6 @@ The primary objectives are:
 
 ## Improvements
 Potential enhancements under consideration:
-- Implement PGD (Projected Gradient Descent) attacks
 - Add support for ensemble adversarial training
 - Include robustness curves across ε values
 - Include more complex models to improve accuracy in both clean and adversarial versions
