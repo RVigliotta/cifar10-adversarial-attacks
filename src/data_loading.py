@@ -28,7 +28,7 @@ def load_or_process_data(batch_size=128, num_workers=2):
 
     # --- If already saved, load from file ---
     if os.path.exists(train_raw_path) and os.path.exists(test_raw_path):
-        print("🔁 Loading data from local cache...")
+        print("Loading data from local cache...")
         train_dict = torch.load(train_raw_path, map_location="cpu")
         test_dict = torch.load(test_raw_path, map_location="cpu")
 
@@ -38,7 +38,7 @@ def load_or_process_data(batch_size=128, num_workers=2):
         test_targets = test_dict["targets"]
 
     else:
-        print("⬇️  Downloading CIFAR-10 from torchvision...")
+        print("Downloading CIFAR-10 from torchvision...")
         train_dataset = datasets.CIFAR10(root="../data", train=True, download=True)
         test_dataset = datasets.CIFAR10(root="../data", train=False, download=True)
 
@@ -51,7 +51,7 @@ def load_or_process_data(batch_size=128, num_workers=2):
         # Robust saving as dictionary
         torch.save({"data": train_data, "targets": train_targets}, train_raw_path)
         torch.save({"data": test_data, "targets": test_targets}, test_raw_path)
-        print("💾 Dataset saved in TensorDataset-compatible format.")
+        print("Dataset saved in TensorDataset-compatible format.")
 
     # --- Apply transformation (normalization) ---
     train_tensor_dataset = TensorDataset(
@@ -68,4 +68,3 @@ def load_or_process_data(batch_size=128, num_workers=2):
     test_loader = DataLoader(test_tensor_dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers)
 
     return train_loader, test_loader
-

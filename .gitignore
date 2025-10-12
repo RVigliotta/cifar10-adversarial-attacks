@@ -1,12 +1,21 @@
 # Escludi la cartella PyCharm
 .idea/
 __pycache__/
+*.pyc
+.ipynb_checkpoints/
 
 # Escludi l'ambiente virtuale Python
 venv/
 
 # Escludi i file di log generici
 *.log
+
+
+# Ignore processed data (heavy cache)
+data/processed/
+*.pt
+*.npy
+*.npz
 
 # Escludi file temporanei
 *.tmp

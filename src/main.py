@@ -1,183 +1,209 @@
-import os
-import torch
+"""
+main.py
+Runs training or evaluation of models (Clean, FGSM, PGD) on CIFAR-10.
+Compatible with GPU (Colab) and saves results in ../docs/evaluation_results.
+"""
+
 import random
-from torch.utils.data import DataLoader, TensorDataset
-import matplotlib.pyplot as plt
+import sys
 import numpy as np
-from evaluation import CleanEvaluator, AttackEvaluator, set_seed
+import torch
+import pandas as pd
+from pathlib import Path
+from data_loading import load_or_process_data
+from training import train_clean_model, train_adversarial_model
+from evaluation import CleanEvaluator, AttackEvaluator, plot_model_comparison, plot_robustness_analysis
+from attacks import fgsm_attack, pgd_attack
 from models.model_definitions import TestCNNv2
-from src.attacks import fgsm_attack, pgd_attack
+
+project_root = Path(__file__).resolve().parents[1]
+sys.path.append(str(project_root))
+
+MODEL_DIR = Path("../models/saved_models")
+MODEL_DIR.mkdir(parents=True, exist_ok=True)
+
+DOCS_DIR = Path("../docs/evaluation_results")
+DOCS_DIR.mkdir(parents=True, exist_ok=True)
+
+CLEAN_MODEL_PATH = MODEL_DIR / "test_cnn_clean.pth"
+FGSM_MODEL_PATH = MODEL_DIR / "test_cnn_fgsm.pth"
+PGD_MODEL_PATH = MODEL_DIR / "test_cnn_pgd.pth"
 
 
-def load_test_dataset(processed_path='../data/processed/test.pt', raw_path='../data/processed/test_raw.pt'):
+def set_seed(seed=42):
+    """Set seed for reproducibility"""
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+
+
+def device_info():
+    """Display device information and return device object"""
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"Device: {device}")
+    if torch.cuda.is_available():
+        print(f"GPU: {torch.cuda.get_device_name()}")
+        print(f"GPU Memory: {torch.cuda.get_device_properties(0).total_memory / 1024 ** 3:.1f} GB")
+    return device
+
+
+def prepare_data(batch_size=128):
+    """Prepare and load CIFAR-10 dataset"""
+    set_seed(42)
+    train_loader, test_loader = load_or_process_data(batch_size=batch_size)
+    print(f"Training batches: {len(train_loader)}, Test batches: {len(test_loader)}")
+    return train_loader, test_loader
+
+
+def evaluate_models(test_loader, device=None, epsilon=0.03):
     """
-    Robustly loads the test set.
-    - If ../data/processed/test.pt is a Dataset object (e.g., torchvision CIFAR10), it uses it directly.
-    - If not available, tries to load test_raw.pt (dict with 'data' and 'targets') and builds a TensorDataset.
+    Evaluate three models (Clean, FGSM, PGD)
+    Generate detailed metrics and advanced comparative plots.
+
+    Args:
+        test_loader: DataLoader for test data
+        device: Torch device (auto-detected if None)
+        epsilon: Perturbation magnitude for attacks
+
+    Returns:
+        List of evaluation results for each model
     """
-    if os.path.exists(processed_path):
-        try:
-            ds = torch.load(processed_path)
-            # if it's a dataset object (has __len__ and __getitem__), use it directly
-            if hasattr(ds, '__len__') and hasattr(ds, '__getitem__'):
-                return ds
-            # otherwise if it's a dict, build a TensorDataset
-            if isinstance(ds, dict) and 'data' in ds and 'targets' in ds:
-                data = torch.tensor(ds['data']).permute(0, 3, 1, 2).float().div(255.0)  # HWC->CHW and scale to [0,1]
-                targets = torch.tensor(ds['targets']).long()
-                return TensorDataset(data, targets)
-        except Exception as e:
-            print(f"Warning: cannot load {processed_path}: {e}")
+    device = device or torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    results = []
 
-    # fallback: try raw dict
-    if os.path.exists(raw_path):
-        try:
-            ds = torch.load(raw_path)
-            if isinstance(ds, dict) and 'data' in ds and 'targets' in ds:
-                data = torch.tensor(ds['data']).permute(0, 3, 1, 2).float().div(255.0)
-                targets = torch.tensor(ds['targets']).long()
-                return TensorDataset(data, targets)
-        except Exception as e:
-            print(f"Warning: cannot load {raw_path}: {e}")
+    # Initialize evaluators
+    clean_evaluator = CleanEvaluator(device=device)
+    fgsm_evaluator = AttackEvaluator(
+        attack_fn=fgsm_attack,
+        attack_params={"epsilon": epsilon},
+        device=device
+    )
+    pgd_evaluator = AttackEvaluator(
+        attack_fn=pgd_attack,
+        attack_params={"epsilon": epsilon, "alpha": 2 / 255, "num_iter": 7},
+        device=device
+    )
 
-    raise FileNotFoundError(
-        "No suitable test dataset found. Run data_loading.py to create ../data/processed/test.pt or test_raw.pt")
+    model_configs = [
+        ("Clean", CLEAN_MODEL_PATH),
+        ("FGSM", FGSM_MODEL_PATH),
+        ("PGD", PGD_MODEL_PATH)
+    ]
+
+    for model_name, model_path in model_configs:
+        if not model_path.exists():
+            print(f"Model not found: {model_path}")
+            continue
+
+        print(f"\nEvaluating {model_name} model...")
+        model = TestCNNv2().to(device)
+
+        # Load model state with flexible checkpoint handling
+        checkpoint = torch.load(model_path, map_location=device)
+
+        if isinstance(checkpoint, dict):
+            if "model_state_dict" in checkpoint:
+                model.load_state_dict(checkpoint["model_state_dict"], strict=False)
+            elif "state_dict" in checkpoint:
+                model.load_state_dict(checkpoint["state_dict"], strict=False)
+            else:
+                # Assume it's a state dict with different structure
+                model.load_state_dict(checkpoint, strict=False)
+        else:
+            # Direct state dict
+            model.load_state_dict(checkpoint, strict=False)
+
+        model.eval()
+
+        # --- Comprehensive Evaluation ---
+        clean_metrics = clean_evaluator.evaluate(model, test_loader)
+        fgsm_metrics = fgsm_evaluator.evaluate(model, test_loader, clean_metrics=clean_metrics)
+        pgd_metrics = pgd_evaluator.evaluate(model, test_loader, clean_metrics=clean_metrics)
+
+        # Extract key metrics
+        clean_accuracy = clean_metrics.get("accuracy")
+        fgsm_accuracy = fgsm_metrics.get("adv_accuracy")
+        pgd_accuracy = pgd_metrics.get("adv_accuracy")
+
+        results.append({
+            "model": model_name,
+            "clean_acc": clean_accuracy,
+            "fgsm_acc": fgsm_accuracy,
+            "pgd_acc": pgd_accuracy,
+            "ASR": fgsm_metrics.get("ASR", np.nan),
+            "Fooling Rate": fgsm_metrics.get("Fooling Rate", np.nan),
+            "Robustness": fgsm_metrics.get("Robustness", np.nan),
+            "Distortion (L2)": fgsm_metrics.get("Distortion (L2)", np.nan),
+            "Precision": clean_metrics.get("precision"),
+            "Recall": clean_metrics.get("recall"),
+            "F1": clean_metrics.get("f1"),
+            "Evaluation Time (s)": clean_metrics.get("total_time")
+        })
+
+        print(f"Metrics collected for: {model_name}")
+
+    # --- Save Combined Results ---
+    df = pd.DataFrame(results)
+    results_csv_path = DOCS_DIR / "evaluation_metrics.csv"
+    df.to_csv(results_csv_path, index=False)
+    print(f"\nCombined metrics saved to: {results_csv_path}")
+
+    # --- Generate Advanced Visualizations ---
+    plot_model_comparison(results)
+    plot_robustness_analysis(results)
+
+    return results
 
 
-def plot_results(results, outpath='../docs/robustness_comparison.png'):
-    models = ['Clean Model', 'Adversarial Model']
-    colors = ['#1f77b4', '#ff7f0e']
+def run_complete_training_pipeline():
+    """Run complete training pipeline for all model types"""
+    print("Starting Complete Training Pipeline")
+    print("=" * 50)
 
-    clean_clean = results['Clean Model (Clean)']['accuracy']
-    clean_attacked = results['Clean Model (Attacked)']['accuracy']
-    adv_clean = results['Adversarial Model (Clean)']['accuracy']
-    adv_attacked = results['Adversarial Model (Attacked)']['accuracy']
+    # Train Clean Model
+    print("\nTraining Clean Model...")
+    train_clean_model(num_epochs=20, batch_size=64)
 
-    values = np.array([[clean_clean, clean_attacked],
-                       [adv_clean, adv_attacked]])
+    # Train FGSM Adversarial Model
+    print("\nTraining FGSM Adversarial Model...")
+    train_adversarial_model(use_pgd=False, num_epochs=40, batch_size=128)
 
-    x = np.arange(len(models))
-    width = 0.35
+    # Train PGD Adversarial Model
+    print("\nTraining PGD Adversarial Model...")
+    train_adversarial_model(use_pgd=True, num_epochs=60, batch_size=128)
 
-    fig, ax = plt.subplots(figsize=(10, 6))
-    rects1 = ax.bar(x - width / 2, values[:, 0], width, label='Clean Data', color=colors[0], edgecolor='black')
-    rects2 = ax.bar(x + width / 2, values[:, 1], width, label='Attacked Data', color=colors[1], edgecolor='black')
-
-    ax.set_ylabel('Accuracy', fontsize=12)
-    ax.set_title('Model Robustness Comparison (FGSM Attack, ε=0.03)', fontsize=14)
-    ax.set_xticks(x)
-    ax.set_xticklabels(models, fontsize=11)
-    ax.set_ylim(0, 1)
-    ax.grid(axis='y', linestyle='--', alpha=0.6)
-    ax.legend()
-
-    def autolabel(rects):
-        for rect in rects:
-            height = rect.get_height()
-            ax.annotate(f'{height:.2%}',
-                        xy=(rect.get_x() + rect.get_width() / 2, height),
-                        xytext=(0, 3),
-                        textcoords="offset points",
-                        ha='center', va='bottom',
-                        fontsize=10)
-
-    autolabel(rects1)
-    autolabel(rects2)
-
-    plt.tight_layout()
-    os.makedirs(os.path.dirname(outpath), exist_ok=True)
-    plt.savefig(outpath, dpi=300, bbox_inches='tight')
-    plt.show()
+    print("\nTraining pipeline completed!")
 
 
 def main():
-    # seed & device
-    seed = 42
-    set_seed(seed)
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    print(f"Device: {device}, seed: {seed}")
+    """Main execution function"""
+    device = device_info()
+    set_seed(42)
 
-    # load test dataset
-    try:
-        test_ds = load_test_dataset()
-    except FileNotFoundError as e:
-        print(e)
-        return
+    # Option 1: Run complete training pipeline
+    run_complete_training_pipeline()
 
-    # If dataset is a TensorDataset with unnormalized [0,1], we must normalize for model
-    # Decide expected normalization: use mean/std=(0.5,0.5,0.5)
-    # If the dataset items are PIL/images with transforms already applied, they will be normalized by the dataset.
-    # We'll create a DataLoader that returns normalized images (model expects normalized inputs).
-    def collate_fn(batch):
-        # batch elements might be (tensor_image, label) or (PIL converted via dataset, label)
-        imgs, labs = zip(*batch)
-        imgs = torch.stack([img if img.max() > 1.1 else img for img in imgs], dim=0)  # heuristic
-        # If imgs are in [0,1], normalize to [-1,1] using mean=0.5,std=0.5
-        mean = torch.tensor([0.5, 0.5, 0.5]).view(1, 3, 1, 1)
-        std = torch.tensor([0.5, 0.5, 0.5]).view(1, 3, 1, 1)
-        imgs = (imgs - mean) / std
-        labs = torch.tensor(labs).long()
-        return imgs, labs
+    # Option 2: Evaluate existing models
+    print("\nEvaluating existing models...")
+    _, test_loader = prepare_data(batch_size=128)
+    results = evaluate_models(test_loader, device=device)
 
-    # build DataLoader (small batch size for quick evaluation)
-    test_loader = DataLoader(test_ds, batch_size=64, shuffle=False)
-
-    # load models (robustly try multiple possible adv filenames)
-    model_clean = TestCNNv2().to(device)
-    model_adv = TestCNNv2().to(device)
-    clean_path = '../models/saved_models/test_cnn_v2.pth'
-    adv_candidates = [
-        '../models/saved_models/test_cnn_v2_pgd.pth',
-        '../models/saved_models/test_cnn_v2_fgsm.pth',
-        '../models/saved_models/test_cnn_v2_adv.pth'
-    ]
-
-    try:
-        model_clean.load_state_dict(torch.load(clean_path, map_location=device))
-        print(f"Loaded clean model from {clean_path}")
-    except Exception as e:
-        print(f"Error loading clean model ({clean_path}): {e}")
-        return
-
-    adv_loaded = False
-    for p in adv_candidates:
-        if os.path.exists(p):
-            try:
-                model_adv.load_state_dict(torch.load(p, map_location=device))
-                print(f"Loaded adversarial model from {p}")
-                adv_loaded = True
-                break
-            except Exception as e:
-                print(f"Found {p} but failed to load: {e}")
-
-    if not adv_loaded:
-        print("No adversarial model found among candidates; using clean model for adv evaluation (not ideal).")
-        model_adv.load_state_dict(torch.load(clean_path, map_location=device))
-
-    # evaluators (attack epsilon consistent with training: 0.03)
-    clean_eval = CleanEvaluator(device=device, use_amp=False, seed=seed)
-    attack_eval = AttackEvaluator(attack_fn=fgsm_attack, attack_params={'epsilon': 0.03}, device=device, seed=seed)
-
-    results = {}
-
-    print("\nEvaluating Clean Model (clean test set)...")
-    results['Clean Model (Clean)'] = clean_eval.evaluate(model_clean, test_loader)
-
-    print("\nEvaluating Clean Model (FGSM attacked)...")
-    results['Clean Model (Attacked)'] = attack_eval.evaluate(model_clean, test_loader)
-
-    print("\nEvaluating Adversarial Model (clean test set)...")
-    results['Adversarial Model (Clean)'] = clean_eval.evaluate(model_adv, test_loader)
-
-    print("\nEvaluating Adversarial Model (FGSM attacked)...")
-    results['Adversarial Model (Attacked)'] = attack_eval.evaluate(model_adv, test_loader)
-
-    print("\nFinal Results:")
-    for k, v in results.items():
-        print(f"{k}: {v['accuracy']:.2%}")
-
-    plot_results(results)
+    # Display summary
+    print("\n" + "=" * 50)
+    print("EVALUATION SUMMARY")
+    print("=" * 50)
+    for result in results:
+        print(f"\n{result['model']} Model:")
+        print(f"   Clean Accuracy: {result['clean_acc']:.4f}")
+        print(f"   FGSM Accuracy:  {result['fgsm_acc']:.4f}")
+        print(f"   PGD Accuracy:   {result['pgd_acc']:.4f}")
+        print(f"   Robustness:     {result['Robustness']:.4f}")
+        print(f"   F1 Score:       {result['F1']:.4f}")
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()
