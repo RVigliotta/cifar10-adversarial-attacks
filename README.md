@@ -65,17 +65,17 @@ This project provides an in-depth exploration of adversarial machine learning, d
 ### 📋 Performance Summary
 
 | Model Type | Clean Accuracy | FGSM Accuracy (ε=0.03) | PGD Accuracy (ε=0.03) | Robustness |
-|------------|----------------|------------------------|----------------------|------------|
-| **Standard CNN** | 85.42% | 11.24% | 8.76% | 0.112 |
-| **FGSM Trained** | 71.94% | 26.79% | 18.45% | 0.268 |
-| **PGD Trained** | 69.23% | 31.56% | 24.18% | 0.316 |
+|------------|----------------|------------------------|-----------------------|------------|
+| **Standard CNN** | 86.91%         | 1.41%                  | 0.0%                  | 0.141      |
+| **FGSM Trained** | 79.39%         | 39.01%                 | 30.64%                | 0.390      |
+| **PGD Trained** | 78.98%         | 40.75%                 | 34.03%                | 0.407      |
 
 ### 📈 Key Findings
 
-- **🔄 Robustness-Accuracy Trade-off**: Adversarial training reduces clean accuracy by ~15% but significantly improves robustness
-- **🎯 Attack Effectiveness**: FGSM attacks reduce standard model accuracy by 74%, PGD by 77%
-- **🛡️ Defense Impact**: PGD-trained models show highest robustness, with 3× improvement over baseline
-- **⚡ Transferability**: FGSM-trained models show partial resistance to PGD attacks
+- **🔄 Robustness-Accuracy Trade-off**: Adversarial training (FGSM or PGD) reduces clean accuracy by about 7–8 percentage points compared to the standard model, but drastically improves robustness (from 0.141 to over 0.4).
+- **🎯 Attack Effectiveness**: FGSM and PGD attacks severely degrade the standard model’s accuracy, reducing it by ~85% and ~87% respectively compared to its clean accuracy.
+- **🛡️ Defense Impact**: PGD training boosts FGSM accuracy from 1.41% to 40.75%, a ~29× gain in adversarial robustness.
+- **⚡ Transferability**: The FGSM-trained model retains partial resistance to PGD attacks (30.64%), suggesting moderate robustness even against stronger adversaries.
 
 ### 📊 Visualization Examples
 ![Model Comparison](docs/evaluation_results/model_comparison.png)
