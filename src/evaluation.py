@@ -8,6 +8,9 @@ import sys
 from pathlib import Path
 from abc import ABC, abstractmethod
 from sklearn.metrics import precision_score, recall_score, f1_score
+from captum.attr import Saliency
+from pytorch_grad_cam import GradCAM
+from pytorch_grad_cam.utils.model_targets import ClassifierOutputTarget
 
 # Add project root to path for cross-platform compatibility
 project_root = Path(__file__).resolve().parents[1]
@@ -143,7 +146,7 @@ class AttackEvaluator(BaseEvaluator):
             params.setdefault('mean', self.mean)
             params.setdefault('std', self.std)
 
-            # ⏱️ Attack generation timing
+            # Attack generation timing
             attack_start_time = time.time()
             adv_images_denorm = self.attack_fn(model, images_denorm, labels, **params)
             attack_times.append(time.time() - attack_start_time)
@@ -191,8 +194,10 @@ class AttackEvaluator(BaseEvaluator):
         return metrics
 
 
-def plot_model_comparison(results, save_dir="../docs/evaluation_results"):
+def plot_model_comparison(results, save_dir=None):
     """Create informative and aesthetic comparison plots"""
+    if save_dir is None:
+        save_dir = "../docs/evaluation_results"
     save_path = Path(save_dir)
     save_path.mkdir(parents=True, exist_ok=True)
 
@@ -253,11 +258,13 @@ def plot_model_comparison(results, save_dir="../docs/evaluation_results"):
     plt.savefig(save_path / "model_comparison.png", dpi=300, bbox_inches='tight')
     plt.close()
 
-    print(f"📊 Model comparison plots saved to {save_path}/model_comparison.png")
+    print(f"Model comparison plots saved to {save_path}/model_comparison.png")
 
 
-def plot_robustness_analysis(results, save_dir="../docs/evaluation_results"):
+def plot_robustness_analysis(results, save_dir=None):
     """Specific robustness analysis visualization"""
+    if save_dir is None:
+        save_dir = "../docs/evaluation_results"
     save_path = Path(save_dir)
     save_path.mkdir(parents=True, exist_ok=True)
 
@@ -298,7 +305,7 @@ def plot_robustness_analysis(results, save_dir="../docs/evaluation_results"):
     plt.savefig(save_path / "robustness_analysis.png", dpi=300, bbox_inches='tight')
     plt.close()
 
-    print(f"🛡️ Robustness analysis saved to {save_path}/robustness_analysis.png")
+    print(f"Robustness analysis saved to {save_path}/robustness_analysis.png")
 
 
 def save_results_to_csv(results, filename="model_evaluation_results.csv", save_dir="../docs/evaluation_results"):
@@ -311,3 +318,196 @@ def save_results_to_csv(results, filename="model_evaluation_results.csv", save_d
     df.to_csv(filepath, index=False)
     print(f"Results saved to {filepath}")
     return df
+
+
+def visualize_interpretability(model, dataloader, device, attack_fns=None, attack_params=None,
+                               save_dir="../docs/evaluation_results", num_images=1):
+    """
+    Clean interpretability visualization with balanced layout and improved font sizes.
+    """
+    epsilon = attack_params.get("epsilon", 0.03) if attack_params else 0.03
+    save_path = Path(save_dir)
+    save_path.mkdir(parents=True, exist_ok=True)
+
+    model.eval()
+    model.to(device)
+
+    # --- Prepare sample data ---
+    data_iter = iter(dataloader)
+    images, labels = next(data_iter)
+    images, labels = images[:num_images].to(device), labels[:num_images].to(device)
+
+    # --- Find last convolutional layer for Grad-CAM ---
+    target_layer = None
+    for name, module in reversed(list(model.named_modules())):
+        if isinstance(module, torch.nn.Conv2d):
+            target_layer = module
+            break
+
+    if target_layer is None:
+        raise ValueError("❌ No convolutional layer found for Grad-CAM.")
+
+    # Initialize interpretability methods
+    gradcam = GradCAM(model=model, target_layers=[target_layer])
+    saliency = Saliency(model)
+
+    # Normalization parameters
+    mean = torch.tensor([0.5, 0.5, 0.5], device=device).view(1, 3, 1, 1)
+    std = torch.tensor([0.5, 0.5, 0.5], device=device).view(1, 3, 1, 1)
+
+    def denorm(x):
+        return (x * std + mean).clamp(0, 1)
+
+    # CIFAR-10 class names
+    class_names = ['airplane', 'automobile', 'bird', 'cat', 'deer',
+                   'dog', 'frog', 'horse', 'ship', 'truck']
+
+    # Create clean visualization for single image
+    img = images[0].unsqueeze(0)
+    label = labels[0].item()
+    true_class = class_names[label]
+
+    # Get original image
+    rgb_img = denorm(img)[0].permute(1, 2, 0).cpu().numpy()
+    rgb_img = np.clip(rgb_img, 0, 1)
+
+    # Get model prediction for clean image
+    with torch.no_grad():
+        clean_output = model(img)
+        clean_pred = torch.argmax(clean_output, dim=1).item()
+        clean_confidence = torch.softmax(clean_output, dim=1)[0, clean_pred].item()
+        clean_class = class_names[clean_pred]
+
+    # Generate saliency map and Grad-CAM for clean image
+    saliency_attrs = saliency.attribute(img, target=clean_pred)
+    saliency_map = saliency_attrs.abs().max(dim=1)[0].squeeze().cpu().detach().numpy()
+    saliency_map = (saliency_map - saliency_map.min()) / (saliency_map.max() - saliency_map.min() + 1e-8)
+
+    grayscale_cam = gradcam(input_tensor=img, targets=[ClassifierOutputTarget(clean_pred)])[0]
+
+    # Prepare conditions for plotting
+    conditions = []
+
+    # Clean condition
+    conditions.append({
+        'name': 'Clean',
+        'image': rgb_img,
+        'saliency': saliency_map,
+        'gradcam': grayscale_cam,
+        'scores': torch.softmax(clean_output, dim=1)[0].cpu().detach().numpy(),
+        'true_class': true_class,
+        'pred_class': clean_class,
+        'confidence': clean_confidence,
+        'is_correct': clean_pred == label
+    })
+
+    # Adversarial conditions
+    if attack_fns:
+        for attack_name, attack_fn in attack_fns.items():
+            # Generate adversarial example
+            img_denorm = denorm(img)
+            adv_img = attack_fn(model, img_denorm, torch.tensor([label], device=device),
+                                epsilon=epsilon, mean=mean, std=std)
+            adv_img_norm = (adv_img - mean) / std
+
+            # Get adversarial image
+            rgb_adv = denorm(adv_img_norm)[0].permute(1, 2, 0).cpu().detach().numpy()
+            rgb_adv = np.clip(rgb_adv, 0, 1)
+
+            # Get model prediction on adversarial example
+            with torch.no_grad():
+                adv_output = model(adv_img_norm)
+                adv_pred = torch.argmax(adv_output, dim=1).item()
+                adv_confidence = torch.softmax(adv_output, dim=1)[0, adv_pred].item()
+                adv_class = class_names[adv_pred]
+
+            # Generate explanations for adversarial image
+            saliency_adv = saliency.attribute(adv_img_norm, target=adv_pred)
+            saliency_map_adv = saliency_adv.abs().max(dim=1)[0].squeeze().cpu().detach().numpy()
+            saliency_map_adv = (saliency_map_adv - saliency_map_adv.min()) / (
+                        saliency_map_adv.max() - saliency_map_adv.min() + 1e-8)
+
+            grayscale_cam_adv = gradcam(input_tensor=adv_img_norm, targets=[ClassifierOutputTarget(adv_pred)])[0]
+
+            conditions.append({
+                'name': f'{attack_name} Attack',
+                'image': rgb_adv,
+                'saliency': saliency_map_adv,
+                'gradcam': grayscale_cam_adv,
+                'scores': torch.softmax(adv_output, dim=1)[0].cpu().detach().numpy(),
+                'true_class': true_class,
+                'pred_class': adv_class,
+                'confidence': adv_confidence,
+                'is_correct': adv_pred == label
+            })
+
+    # Create figure with adjusted height
+    num_rows = len(conditions)
+    fig, axes = plt.subplots(num_rows, 4, figsize=(18, 4.2 * num_rows))  # Reduced row height
+
+    if num_rows == 1:
+        axes = axes.reshape(1, -1)
+
+    # Plot each condition
+    for i, condition in enumerate(conditions):
+        # Column 0: Original/Adversarial Image
+        axes[i, 0].imshow(condition['image'])
+        color = 'green' if condition['is_correct'] else 'red'
+        status = "✓ Correct" if condition['is_correct'] else "✗ Wrong"
+        axes[i, 0].set_title(
+            f"{condition['name']}\nTrue: {condition['true_class']} | Pred: {condition['pred_class']}\n{status} | Conf: {condition['confidence']:.3f}",
+            fontsize=15, color=color, fontweight='bold', pad=12)
+        axes[i, 0].axis('off')
+
+        # Column 1: Saliency Map
+        axes[i, 1].imshow(condition['image'], alpha=0.8)
+        im_sal = axes[i, 1].imshow(condition['saliency'], cmap='hot', alpha=0.6)
+        axes[i, 1].set_title("Saliency Map", fontsize=15, fontweight='bold', pad=12)
+        axes[i, 1].axis('off')
+
+        # Column 2: Grad-CAM
+        axes[i, 2].imshow(condition['image'], alpha=0.8)
+        im_cam = axes[i, 2].imshow(condition['gradcam'], cmap='jet', alpha=0.6)
+        axes[i, 2].set_title("Grad-CAM", fontsize=15, fontweight='bold', pad=12)
+        axes[i, 2].axis('off')
+
+        # Column 3: Prediction Distribution (more compact)
+        scores = condition['scores']
+        top_k = 4
+        top_indices = np.argsort(scores)[-top_k:][::-1]
+        top_scores = scores[top_indices]
+        top_classes = [class_names[idx] for idx in top_indices]
+
+        # Create more compact bar plot
+        bars = axes[i, 3].barh(range(len(top_scores)), top_scores, color='#1e3a5f', alpha=0.8, height=0.6)
+        axes[i, 3].set_yticks(range(len(top_scores)))
+        axes[i, 3].set_yticklabels(top_classes, fontsize=11)
+        axes[i, 3].set_xlim(0, 1)
+        axes[i, 3].set_title('Top-4 Predictions', fontsize=15, fontweight='bold', pad=12)
+        axes[i, 3].grid(axis='x', alpha=0.3, linestyle='--')
+
+        # Adjust subplot position to make it more compact
+        pos = axes[i, 3].get_position()
+        axes[i, 3].set_position([pos.x0, pos.y0 + 0.05, pos.width, pos.height - 0.1])
+
+        # Add value labels with increased font size
+        for j, (bar, score) in enumerate(zip(bars, top_scores)):
+            width = bar.get_width()
+            axes[i, 3].text(width + 0.02, bar.get_y() + bar.get_height() / 2,
+                            f'{score:.3f}', ha='left', va='center', fontsize=10,
+                            bbox=dict(boxstyle="round,pad=0.1", facecolor='white', alpha=0.7))
+
+            # Highlight the predicted class
+            if top_classes[j] == condition['pred_class']:
+                bar.set_color('#e74c3c')
+                bar.set_alpha(0.9)
+
+    plt.tight_layout()
+    plt.savefig(save_path / "interpretability_analysis.png", dpi=300, bbox_inches="tight", facecolor='white')
+    plt.close()
+
+    # Clean up
+    del gradcam, saliency
+    torch.cuda.empty_cache()
+
+    print(f"Interpretability analysis saved to: {save_path}/interpretability_analysis.png")

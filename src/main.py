@@ -1,33 +1,34 @@
 """
 main.py
 Runs training or evaluation of models (Clean, FGSM, PGD) on CIFAR-10.
-Compatible with GPU (Colab) and saves results in ../docs/evaluation_results.
+Now includes interpretability/explainability analysis (Grad-CAM, Saliency, and perturbation visualization).
 """
 
 import random
-import sys
 import numpy as np
 import torch
 import pandas as pd
 from pathlib import Path
 from data_loading import load_or_process_data
 from training import train_clean_model, train_adversarial_model
-from evaluation import CleanEvaluator, AttackEvaluator, plot_model_comparison, plot_robustness_analysis
+from evaluation import (
+    CleanEvaluator,
+    AttackEvaluator,
+    plot_model_comparison,
+    plot_robustness_analysis,
+    visualize_interpretability,
+)
 from attacks import fgsm_attack, pgd_attack
 from models.model_definitions import TestCNNv2
 
-project_root = Path(__file__).resolve().parents[1]
-sys.path.append(str(project_root))
 
-MODEL_DIR = Path("../models/saved_models")
-MODEL_DIR.mkdir(parents=True, exist_ok=True)
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+MODELS_DIR = PROJECT_ROOT / "models" / "saved_models"
+DOCS_DIR = PROJECT_ROOT / "docs" / "evaluation_results"
 
-DOCS_DIR = Path("../docs/evaluation_results")
-DOCS_DIR.mkdir(parents=True, exist_ok=True)
-
-CLEAN_MODEL_PATH = MODEL_DIR / "test_cnn_clean.pth"
-FGSM_MODEL_PATH = MODEL_DIR / "test_cnn_fgsm.pth"
-PGD_MODEL_PATH = MODEL_DIR / "test_cnn_pgd.pth"
+clean_model_path = MODELS_DIR / "test_cnn_clean.pth"
+fgsm_model_path = MODELS_DIR / "test_cnn_fgsm.pth"
+pgd_model_path = MODELS_DIR / "test_cnn_pgd.pth"
 
 
 def set_seed(seed=42):
@@ -60,38 +61,20 @@ def prepare_data(batch_size=128):
 
 
 def evaluate_models(test_loader, device=None, epsilon=0.03):
-    """
-    Evaluate three models (Clean, FGSM, PGD)
-    Generate detailed metrics and advanced comparative plots.
-
-    Args:
-        test_loader: DataLoader for test data
-        device: Torch device (auto-detected if None)
-        epsilon: Perturbation magnitude for attacks
-
-    Returns:
-        List of evaluation results for each model
-    """
+    """Evaluate three models (Clean, FGSM, PGD) with detailed metrics"""
     device = device or torch.device("cuda" if torch.cuda.is_available() else "cpu")
     results = []
 
-    # Initialize evaluators
     clean_evaluator = CleanEvaluator(device=device)
-    fgsm_evaluator = AttackEvaluator(
-        attack_fn=fgsm_attack,
-        attack_params={"epsilon": epsilon},
-        device=device
-    )
+    fgsm_evaluator = AttackEvaluator(attack_fn=fgsm_attack, attack_params={"epsilon": epsilon}, device=device)
     pgd_evaluator = AttackEvaluator(
-        attack_fn=pgd_attack,
-        attack_params={"epsilon": epsilon, "alpha": 2 / 255, "num_iter": 7},
-        device=device
+        attack_fn=pgd_attack, attack_params={"epsilon": epsilon, "alpha": 2 / 255, "num_iter": 7}, device=device
     )
 
     model_configs = [
-        ("Clean", CLEAN_MODEL_PATH),
-        ("FGSM", FGSM_MODEL_PATH),
-        ("PGD", PGD_MODEL_PATH)
+        ("Clean", clean_model_path),
+        ("FGSM", fgsm_model_path),
+        ("PGD", pgd_model_path),
     ]
 
     for model_name, model_path in model_configs:
@@ -102,38 +85,29 @@ def evaluate_models(test_loader, device=None, epsilon=0.03):
         print(f"\nEvaluating {model_name} model...")
         model = TestCNNv2().to(device)
 
-        # Load model state with flexible checkpoint handling
         checkpoint = torch.load(model_path, map_location=device)
-
         if isinstance(checkpoint, dict):
             if "model_state_dict" in checkpoint:
                 model.load_state_dict(checkpoint["model_state_dict"], strict=False)
             elif "state_dict" in checkpoint:
                 model.load_state_dict(checkpoint["state_dict"], strict=False)
             else:
-                # Assume it's a state dict with different structure
                 model.load_state_dict(checkpoint, strict=False)
         else:
-            # Direct state dict
             model.load_state_dict(checkpoint, strict=False)
 
         model.eval()
 
-        # --- Comprehensive Evaluation ---
+        # --- Evaluate ---
         clean_metrics = clean_evaluator.evaluate(model, test_loader)
         fgsm_metrics = fgsm_evaluator.evaluate(model, test_loader, clean_metrics=clean_metrics)
         pgd_metrics = pgd_evaluator.evaluate(model, test_loader, clean_metrics=clean_metrics)
 
-        # Extract key metrics
-        clean_accuracy = clean_metrics.get("accuracy")
-        fgsm_accuracy = fgsm_metrics.get("adv_accuracy")
-        pgd_accuracy = pgd_metrics.get("adv_accuracy")
-
         results.append({
             "model": model_name,
-            "clean_acc": clean_accuracy,
-            "fgsm_acc": fgsm_accuracy,
-            "pgd_acc": pgd_accuracy,
+            "clean_acc": clean_metrics.get("accuracy"),
+            "fgsm_acc": fgsm_metrics.get("adv_accuracy"),
+            "pgd_acc": pgd_metrics.get("adv_accuracy"),
             "ASR": fgsm_metrics.get("ASR", np.nan),
             "Fooling Rate": fgsm_metrics.get("Fooling Rate", np.nan),
             "Robustness": fgsm_metrics.get("Robustness", np.nan),
@@ -141,38 +115,36 @@ def evaluate_models(test_loader, device=None, epsilon=0.03):
             "Precision": clean_metrics.get("precision"),
             "Recall": clean_metrics.get("recall"),
             "F1": clean_metrics.get("f1"),
-            "Evaluation Time (s)": clean_metrics.get("total_time")
+            "Evaluation Time (s)": clean_metrics.get("total_time"),
         })
 
         print(f"Metrics collected for: {model_name}")
 
-    # --- Save Combined Results ---
-    df = pd.DataFrame(results)
-    results_csv_path = DOCS_DIR / "evaluation_metrics.csv"
-    df.to_csv(results_csv_path, index=False)
-    print(f"\nCombined metrics saved to: {results_csv_path}")
+    # Save + Plot
+    DOCS_DIR.mkdir(parents=True, exist_ok=True)
 
-    # --- Generate Advanced Visualizations ---
-    plot_model_comparison(results)
-    plot_robustness_analysis(results)
+    df = pd.DataFrame(results)
+    csv_path = DOCS_DIR / "evaluation_metrics.csv"
+    df.to_csv(csv_path, index=False)
+    print(f"\nCombined metrics saved to: {csv_path}")
+
+    plot_model_comparison(results, save_dir=DOCS_DIR)
+    plot_robustness_analysis(results, save_dir=DOCS_DIR)
 
     return results
 
 
 def run_complete_training_pipeline():
-    """Run complete training pipeline for all model types"""
+    """Train clean, FGSM-trained, and PGD-trained models"""
     print("Starting Complete Training Pipeline")
     print("=" * 50)
 
-    # Train Clean Model
     print("\nTraining Clean Model...")
     train_clean_model(num_epochs=20, batch_size=64)
 
-    # Train FGSM Adversarial Model
     print("\nTraining FGSM Adversarial Model...")
     train_adversarial_model(use_pgd=False, num_epochs=40, batch_size=128)
 
-    # Train PGD Adversarial Model
     print("\nTraining PGD Adversarial Model...")
     train_adversarial_model(use_pgd=True, num_epochs=60, batch_size=128)
 
@@ -180,19 +152,56 @@ def run_complete_training_pipeline():
 
 
 def main():
-    """Main execution function"""
+    """Main execution pipeline"""
     device = device_info()
     set_seed(42)
 
-    # Option 1: Run complete training pipeline
+    # --- Step 1: Prepare Data ---
+    train_loader, test_loader = prepare_data(batch_size=128)
+
+    # --- Step 2: Training (optional if models already exist) ---
     run_complete_training_pipeline()
 
-    # Option 2: Evaluate existing models
-    print("\nEvaluating existing models...")
-    _, test_loader = prepare_data(batch_size=128)
+    # --- Step 3: Evaluate Models ---
+    print("\nEvaluating models...")
     results = evaluate_models(test_loader, device=device)
 
-    # Display summary
+    # --- Step 4: Interpretability / Explainability Analysis ---
+    print("\nRunning interpretability analysis (Grad-CAM + Saliency)...")
+
+    # Load clean model (base for comparison)
+    model = TestCNNv2().to(device)
+    if clean_model_path.exists():
+        checkpoint = torch.load(clean_model_path, map_location=device)
+        if isinstance(checkpoint, dict):
+            state_dict = checkpoint.get("model_state_dict", checkpoint.get("state_dict", checkpoint))
+            model.load_state_dict(state_dict, strict=False)
+        else:
+            model.load_state_dict(checkpoint, strict=False)
+        model.eval()
+    else:
+        print("Clean model not found, skipping interpretability analysis.")
+        return
+
+    # Define attacks
+    attack_fns = {"FGSM": fgsm_attack, "PGD": pgd_attack}
+    attack_params = {
+        "FGSM": {"epsilon": 0.03},
+        "PGD": {"epsilon": 0.03, "alpha": 2 / 255, "num_iter": 7},
+    }
+
+    # Run interpretability visualization
+    visualize_interpretability(
+      model=model,
+      dataloader=test_loader,
+      attack_fns=attack_fns,
+      attack_params=attack_params,
+      device=device,
+      num_images=1,
+      save_dir=DOCS_DIR / "interpretability"
+    )
+
+    # --- Step 5: Summary ---
     print("\n" + "=" * 50)
     print("EVALUATION SUMMARY")
     print("=" * 50)
@@ -203,6 +212,8 @@ def main():
         print(f"   PGD Accuracy:   {result['pgd_acc']:.4f}")
         print(f"   Robustness:     {result['Robustness']:.4f}")
         print(f"   F1 Score:       {result['F1']:.4f}")
+
+    print("\nInterpretability results saved in '../docs/evaluation_results/interpretability/'")
 
 
 if __name__ == "__main__":
